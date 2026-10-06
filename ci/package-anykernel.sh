@@ -18,7 +18,7 @@ if [ ! -d "$AK3_SRC" ]; then
 	git clone --depth 1 https://github.com/osm0sis/AnyKernel3.git "$AK3_SRC"
 fi
 
-KSU_DESC="$(git -C "$ROOT/KernelSU" describe --tags 2>/dev/null || echo unknown)"
+KSU_DESC="$(git -C "$ROOT/KernelSU" describe --tags 2>/dev/null || git -C "$ROOT" rev-parse --short HEAD:KernelSU 2>/dev/null || echo unknown)"
 if [ -r "$OUT/include/config/kernel.release" ]; then
 	KERNEL_VER="$(cat "$OUT/include/config/kernel.release")"
 else
