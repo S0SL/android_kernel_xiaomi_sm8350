@@ -97,7 +97,18 @@ jobs:
               fi
             done
           done
-          echo "WARNING: no manager APK release matches $TAG (code $CODE) - the" \
+          # main has no release tag, so the official releases never contain a
+          # matching APK: fall back to the nightly manager build of main.
+          if curl -fsSL --retry 2 -o /tmp/manager-nightly.zip \
+               "https://nightly.link/Baka-SU/BakaSU/workflows/build-manager/main/Manager-release.zip"; then
+            unzip -j -o /tmp/manager-nightly.zip '*.apk' -d /tmp/manager-nightly >/dev/null
+            if ls /tmp/manager-nightly/*arm64-v8a*.apk >/dev/null 2>&1; then
+              cp /tmp/manager-nightly/*arm64-v8a*.apk dist/BakaSU-manager-arm64-v8a.apk
+              echo "fetched nightly manager: $(basename dist/BakaSU-manager-arm64-v8a.apk)"
+              exit 0
+            fi
+          fi
+          echo "WARNING: no manager APK matches $TAG (code $CODE) - the" \
                "app already on the device may report '需要更新内核'"
 
       - name: Artifact summary

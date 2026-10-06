@@ -170,18 +170,56 @@ MAGISKBOOT=/path/to/magiskboot \
 - 反过来：**不要**动 `CONFIG_LOCALVERSION`、`CONFIG_MODVERSIONS`、`CONFIG_MODULE_SIG`、
   `CONFIG_CFI_CLANG`、`CONFIG_LTO_CLANG`、`SMP`/`PREEMPT` 这类影响模块 ABI 的配置，
   否则就真的会出现模块加载失败。
-- **KernelSU 子模块必须钉在 `a9216b04`（2026-08-13，tag `v4.2.0-rc1`），不要跟着 main 走。**
-  原因：BakaSU 在 `03b60f26`（2026-08-23，`kernel: sync with latest susfs`）把 KSU 侧切换到了
-  **新版 SUSFS 接口**；而 5.4 能用的最后一版 SUSFS 是 **v2.1.0**（老接口，来自能正常工作的
-  参考内核）。两者混用（新 KSU + 老 SUSFS）会让**内核在 userspace 起来之前就卡死**：
-  pstore / mtdoops 一个字都不会有，表现为开机第一/二屏反复重启。
-  BakaSU 自己也留有说明这个失败模式的补丁（`052ca277`：*“avoid old version of susfs hang in boot”*）。
-- 内核上报的版本码 = `30000 + KernelSU 提交数 + 700`，当前 `a9216b04` → **35061**。
+- **KernelSU 子模块与 SUSFS 版本必须"同代配对"**（当前状态：submodule 在 **main**，内核侧
+  SUSFS 为 **v2.3.0**，两者配套 ✓）。
+  历史教训：
+  - BakaSU 在 `03b60f26`（2026-08-23，`kernel: sync with latest susfs`）把 KSU 侧切到**新版
+    SUSFS 接口**；如果这时内核侧还是 **v2.1.0**（老接口），内核会**在 userspace 起来之前卡死**
+    —— pstore / mtdoops 一个字都没有，表现为开机第一/二屏反复重启。BakaSU 自己也有描述该
+    失败模式的补丁（`052ca277`：*“avoid old version of susfs hang in boot”*）。
+  - 所以两种可用组合二选一：
+    * **新组合（当前）**：KernelSU **main** + 内核侧 **SUSFS v2.3.0**（移植自上游
+      `gki-android13-5.10` 分支），manager 用 main 的 nightly（`Manager-release`）或同提交构建；
+    * **旧组合（历史）**：KernelSU 钉 `a9216b04`（`v4.2.0-rc1`，版本码 35061 / UAPI 2）+
+      内核侧 SUSFS **v2.1.0**（上游 `kernel-5.4` 分支，2025-02-23 起冻结），manager 用 v4.2.0-rc1。
+- 内核上报的版本码 = `30000 + KernelSU 提交数 + 700`（main @ 4513 → **35213**）。
   CI 里必须先把 submodule 变成完整克隆，否则浅克隆只数到 1 个提交、上报 30701。
-- `KERNEL_SU_UAPI_VERSION`：`a9216b04` → **2**，`v4.2.0-rc3` → 4，main → 5。
-  **内核与 manager 的 UAPI 必须相等**，否则 manager 显示「需要更新内核」。
-  CI 的 “Fetch BakaSU manager APK” 一步会按 submodule 的 tag（`git describe --tags` →
-  `v4.2.0-rc1`）自动下载对应 release，不要再写死版本号。
+- `KERNEL_SU_UAPI_VERSION`：`a9216b04` → 2，`v4.2.0-rc3` → 4，**main → 5**。
+  **内核与 manager 的 UAPI 必须相等**，否则 manager 显示「需要更新内核」（不相等时 su 通常
+  仍可用，但 SUSFS 设置页不可用）。main 没有 release tag，官方 release 里没有对应 APK，
+  要用 nightly：`https://nightly.link/Baka-SU/BakaSU/workflows/build-manager/main/Manager-release.zip`。
+
+## 四·五、SUSFS v2.1.0 → v2.3.0 的移植要点（2026-10-06 完成）
+
+上游 v2.3.0 只有 5.10+ 的补丁（`gki-android13-5.10` 分支），移植到 5.4 时踩到的点：
+
+- 补丁是「从**干净内核**加 SUSFS」的全量补丁：必须先撤掉旧版 SUSFS 再应用，否则冲突从 16 处
+  涨到 43 处；`patch -F3` 的模糊匹配会**猜错位置**（实测 2 处代码被塞进块注释、2 处落进错误
+  函数，其中 `show_smap_vma()` 被改成 `return 0;` 会让 void 函数编译失败），应用后必须逐文件复核。
+- 5.10 → 5.4 的 API 适配（本树已有的 backport 不用动：`mmap_lock`、`struct selinux_state`、
+  `current_uid`、`vfs_getattr`、`d_revalidate`）：
+  * `include/linux/susfs_def.h` 需自己补 `<linux/cred.h>`（v2.3.0 在 5.10 靠间接包含）；
+  * `struct fsnotify_ops` 在 5.4 是 `handle_event`（8 参），5.10 才是 `handle_inode_event`；
+  * `struct kstat` **没有 `mnt_id`**、没有 `STATX_MNT_ID` → SUS_KSTAT 的 mnt_id 欺骗无法移植。
+    不要给 `struct kstat` 加字段：`generic_fillattr` / `vfs_getattr` 是 `EXPORT_SYMBOL`，
+    改结构体会改变 CRC，可能导致 vendor 模块加载失败（显示/触摸立刻出问题）；
+  * `fs/proc/bootconfig.c` 在 5.4 不存在，SPOOF_CMDLINE 由 `fs/proc/cmdline.c` 承担（v2.3.0
+    核心导出的 `susfs_spoof_cmdline_or_bootconfig()` 签名一致，无需改）；
+  * exec hook 要放 `__do_execve_file()`（5.4 没有 `bprm_execve()`），并且必须在 `putname()`
+    **之前**（否则 post hook 读已释放的 `filename->name`）；5.4 独有的 usermode-helper 路径
+    （`filename == NULL`）必须加守卫，否则 KernelSU 空指针崩溃；
+  * open_redirect：5.4 的 `do_last()` 自己就 `vfs_open()`（5.10 是 `open_last_lookups()` +
+    `do_open()` 分离），照抄上游会撞 `BUG_ON(file->f_mode & FMODE_OPENED)` panic →
+    改为「命中后重走一遍 + `is_open_redirect_retry` 保证只重定向一次」。代价：`O_CREAT`/
+    `O_TRUNC` 这类打开对原路径会多一次副作用（与 v2.1.0 的做法一致）；
+  * `security/selinux/selinuxfs.c`：5.4 的 `struct selinux_state` 没有 `status_lock`，同一把锁
+    在 `selinux_state.ss->status_lock`（KernelSU 在 `KSU_COMPAT_USE_SELINUX_STATE` 下也用它）；
+  * `ksu_handle_sys_read` 只有 3 参版本（`KernelSU/kernel/runtime/ksud_integration.c`）。
+- 第一轮验证配置：**SUS_KSTAT 关闭**，其余子功能开启。要开启 SUS_KSTAT 时需注意上面
+  `struct kstat` 的限制（`fs/stat.c` 里那两行 `stat->mnt_id = …` 已按 5.4 形态处理掉）。
+- 编译迭代经验：CI 里给 `kmake` 加 **`-k`**，一次就能拿到全部编译错误（本次第一轮报 5 类、
+  第二轮即零错误通过）。
+
 
 ## 五、这台设备上抓内核 panic 日志（踩坑记录）
 
