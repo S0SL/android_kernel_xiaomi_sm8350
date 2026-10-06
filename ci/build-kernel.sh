@@ -64,7 +64,7 @@ for fragment in "${FRAGMENTS[@]}"; do
 	kmake olddefconfig >/dev/null
 done
 
-echo "== [3/3] enabling BakaSU with manual hooks =="
+echo "== [3/3] enabling BakaSU (SUSFS inline hook mode) =="
 # The kernel is 5.4 (non-GKI), so the tracepoint (GKI2) hook is unusable and
 # the manual hook path is selected instead. The LSM based "auto" hooks are
 # disabled, the three call sites are patched directly in the kernel sources:
@@ -73,12 +73,18 @@ echo "== [3/3] enabling BakaSU with manual hooks =="
 #   drivers/input/input.c -> ksu_handle_input_handle_event
 "$ROOT/scripts/config" --file "$OUT/.config" \
 	-e KSU \
-	-e KSU_MANUAL_HOOK \
+	-e KSU_SUSFS \
 	-d KSU_TRACEPOINT_HOOK \
-	-d KSU_SUSFS \
-	-d KSU_MANUAL_HOOK_AUTO_SETUID_HOOK \
-	-d KSU_MANUAL_HOOK_AUTO_INITRC_HOOK \
-	-d KSU_MANUAL_HOOK_AUTO_INPUT_HOOK
+	-d KSU_MANUAL_HOOK \
+	-e KSU_SUSFS_SUS_PATH \
+	-e KSU_SUSFS_SUS_MOUNT \
+	-e KSU_SUSFS_SUS_KSTAT \
+	-e KSU_SUSFS_SPOOF_UNAME \
+	-e KSU_SUSFS_ENABLE_LOG \
+	-e KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
+	-e KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
+	-e KSU_SUSFS_OPEN_REDIRECT \
+	-e KSU_SUSFS_SUS_MAP
 
 if [ "$NO_DEBUG_INFO" = "1" ]; then
 	echo "-- disabling CONFIG_DEBUG_INFO (debug symbols only)"
@@ -93,7 +99,7 @@ echo "== BakaSU config =="
 grep -E "^CONFIG_KSU|^# CONFIG_KSU" "$OUT/.config" | sed 's/^/  /'
 
 grep -q "^CONFIG_KSU=y" "$OUT/.config" || { echo "ERROR: CONFIG_KSU is not set" >&2; exit 1; }
-grep -q "^CONFIG_KSU_MANUAL_HOOK=y" "$OUT/.config" || { echo "ERROR: CONFIG_KSU_MANUAL_HOOK is not set" >&2; exit 1; }
+grep -q "^CONFIG_KSU_SUSFS=y" "$OUT/.config" || { echo "ERROR: CONFIG_KSU_SUSFS is not set" >&2; exit 1; }
 
 echo
 echo "== building '$MAKE_TARGET' (jobs=$JOBS) =="

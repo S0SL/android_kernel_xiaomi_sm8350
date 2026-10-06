@@ -22,45 +22,71 @@ drivers/Kconfig      + source "drivers/kernelsu/Kconfig"
 git submodule update --remote KernelSU
 ```
 
-### 2. 内核 hook 补丁
+### 2. 内核 hook（SUSFS inline hook 模式）
 
-内核是 5.4，属于 **non-GKI**，所以选择 **Manual Hook**（`CONFIG_KSU_MANUAL_HOOK=y`），
-tracepoint（GKI2/5.10+）模式不可用。
+内核是 5.4（non-GKI），BakaSU 的 tracepoint（GKI2 / 5.10+）模式不可用。
+启用 SUSFS 后 hook 模式取 BakaSU “Hooking Method” choice 的第三项 **SUSFS Inline Hook**
+（`CONFIG_KSU_SUSFS=y`，与 `KSU_MANUAL_HOOK` 互斥），埋点如下：
 
-同时关闭了 BakaSU 默认开启的 LSM “自动 hook”（`KSU_MANUAL_HOOK_AUTO_*`），改为在源码里直接埋点
-（这是 5.4 上最稳妥的方式，也是 miyume 内核采用的方式）：
-
-| 文件 | 加入的调用 | 作用 |
+| 文件 | 埋点 | 作用 |
 | --- | --- | --- |
-| `fs/exec.c` | `ksu_handle_execveat()` in `do_execveat_common()` | `su` 兼容、模块/root 提权识别 |
+| `fs/exec.c` | `ksu_handle_execveat()` / `ksu_handle_execveat_sucompat()` in `do_execveat_common()` | `su` 兼容、模块/root 提权识别 |
 | `fs/open.c` | `ksu_handle_faccessat()` in `do_faccessat()` | `su` 路径重定向 |
 | `fs/stat.c` | `ksu_handle_stat()` in `vfs_statx()`<br>`ksu_handle_newfstat_ret()` in `SYSCALL_DEFINE2(newfstat)`<br>`ksu_handle_fstat64_ret()` in `SYSCALL_DEFINE2(fstat64)` | 隐藏/伪装 stat 结果（su 检测） |
-| `fs/read_write.c` | `ksu_handle_sys_read()` in `SYSCALL_DEFINE3(read)` | init.rc 注入 |
+| `fs/read_write.c` | `ksu_handle_sys_read()` in `SYSCALL_DEFINE3(read)`（static key 控制） | init.rc 注入 |
 | `kernel/reboot.c` | `ksu_handle_sys_reboot()` + `KSU_REBOOT_MAGIC1 (0xDEADBEEF)` | ksud 安装 fd 的 supercall 通道 |
 | `kernel/sys.c` | `ksu_handle_setresuid()` in `__sys_setresuid()` | manager 提权、模块 umount |
-| `drivers/input/input.c` | `ksu_handle_input_handle_event()` in `input_event()` | 音量键安全模式检测 |
+| `drivers/input/input.c` | `ksu_handle_input_handle_event()` in `input_handle_event()`（static key 控制） | 音量键安全模式检测 |
 
-BakaSU 在编译时会用 `kernel/tools/manual_hook_check.mk` 逐个校验这些埋点是否齐全，
-缺任何一个都会直接编译失败 —— 也就是说“编译通过”本身就代表 hook 没有漏。
+BakaSU 编译时用 `kernel/tools/inline_hook_check.mk` 逐个校验这些埋点，
+缺任何一个直接编译失败 —— “编译通过”本身就代表 hook 没漏。
 
-### 3. defconfig
+### 3. SUSFS 内核侧移植
+
+BakaSU 只带 KSU 侧接口，SUSFS 内核侧必须自己 backport。
+simonpunk 官方仓库的 `kernel-5.4` 分支停在 2025-02，缺少 BakaSU 需要的
+`susfs_add_sus_map` / `susfs_show_version` / `susfs_get_enabled_features` 等接口，
+因此以 miyume 内核（同样 sm8350 5.4 + ReSukiSU，SUSFS **v2.1.0**）为基准移植，
+并补上 v2.3.0 才有的 `TIF_PROC_NO_SU(34)`、`TIF_PROC_UMOUNTED_FOR_ZYGOTE_NEXT(35)`
+线程标志与 `susfs_*_no_su()` / `susfs_set_current_proc_umounted_for_zygote_next()` 辅助函数。
+
+新增文件：`fs/susfs.c`、`include/linux/susfs.h`、`include/linux/susfs_def.h`
+
+改动调用点（19 个既有文件）：
+`fs/Makefile`、`fs/exec.c`、`fs/namei.c`、`fs/namespace.c`、`fs/notify/fdinfo.c`、`fs/open.c`、
+`fs/proc/base.c`、`fs/proc/cmdline.c`、`fs/proc/fd.c`、`fs/proc/task_mmu.c`、`fs/proc_namespace.c`、
+`fs/read_write.c`、`fs/readdir.c`、`fs/stat.c`、`fs/statfs.c`、`kernel/kallsyms.c`、`kernel/sys.c`、
+`security/selinux/avc.c`、`drivers/input/input.c`
+
+移植时剔除了参考仓库里与本设备无关的 HyperOS 私有改动（`hwui_mon`、`netbpfload` uname 伪装），
+并保留 LineageOS 原有的 VMA padding 行为（`VMA_PAD_START`）。
+
+SUSFS 不修改任何结构体（只用 thread_info flags 与 inode `i_state` 位），所以**不影响模块 ABI**。
+
+### 4. defconfig
 
 改动在 `arch/arm64/configs/vendor/xiaomi_QGKI.config`（`TARGET_KERNEL_CONFIG` 的最后一个 fragment）：
 
 ```
 CONFIG_KSU=y
-CONFIG_KSU_MANUAL_HOOK=y
-# CONFIG_KSU_MANUAL_HOOK_AUTO_SETUID_HOOK is not set
-# CONFIG_KSU_MANUAL_HOOK_AUTO_INITRC_HOOK is not set
-# CONFIG_KSU_MANUAL_HOOK_AUTO_INPUT_HOOK is not set
+CONFIG_KSU_SUSFS=y
+CONFIG_KSU_SUSFS_SUS_PATH=y
+CONFIG_KSU_SUSFS_SUS_MOUNT=y
+CONFIG_KSU_SUSFS_SUS_KSTAT=y
+CONFIG_KSU_SUSFS_SPOOF_UNAME=y
+CONFIG_KSU_SUSFS_ENABLE_LOG=y
+CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
+CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
+CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
+CONFIG_KSU_SUSFS_SUS_MAP=y
+# CONFIG_KSU_TRACEPOINT_HOOK is not set
+# CONFIG_KSU_MANUAL_HOOK is not set
 ```
 
-### 4. 没有做的东西
+### 5. 没有做的东西
 
-- **SUSFS 未启用**。SUSFS 需要在内核侧做大量 backport（`fs/susfs.c` 等），BakaSU 里 `CONFIG_KSU_SUSFS=y`
-  之外还必须打 simonpunk 的补丁。当前版本不含 SUSFS，manager 里相关功能会显示不可用。
-  需要的话可以后续按 <https://gitlab.com/simonpunk/susfs4ksu> 单独做。
 - 未改动设备树 / dtbo / ramdisk，刷机包只替换 boot 分区里的内核 `Image`。
+- 未包含 `sus_su`（SUSFS 自带的 su 替换实现），Shamiko 支持上游已移除。
 
 ## 二、云编译（GitHub Actions）
 
