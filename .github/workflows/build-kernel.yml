@@ -1,0 +1,100 @@
+name: Build BakaSU kernel (mars)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - "**"
+    paths-ignore:
+      - "**.md"
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # LineageOS 23.2 (Android 16) builds this 5.4 kernel with clang-r563880c
+  CLANG_VERSION: clang-r563880c
+  CLANG_TAG: refs/tags/android-16.0.0_r4
+  KERNEL_IMAGE_NAME: Image
+
+jobs:
+  build:
+    name: Build kernel + AnyKernel3 zip
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+
+    steps:
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          df -h /
+
+      - name: Checkout kernel source (with BakaSU submodule)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Show versions
+        run: |
+          git -C KernelSU log --oneline -1
+          git -C KernelSU describe --tags || true
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bison flex bc libssl-dev libelf-dev libdw-dev cpio rsync zip unzip
+
+      - name: Cache clang prebuilt
+        id: clang-cache
+        uses: actions/cache@v4
+        with:
+          path: toolchain/${{ env.CLANG_VERSION }}
+          key: ${{ runner.os }}-${{ env.CLANG_VERSION }}
+
+      - name: Download AOSP clang ${{ env.CLANG_VERSION }}
+        if: steps.clang-cache.outputs.cache-hit != 'true'
+        run: |
+          curl -L --retry 3 --retry-delay 5 -o /tmp/clang.tar.gz \
+            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/${{ env.CLANG_TAG }}/${{ env.CLANG_VERSION }}.tar.gz"
+          mkdir -p "toolchain/${{ env.CLANG_VERSION }}"
+          tar xzf /tmp/clang.tar.gz -C "toolchain/${{ env.CLANG_VERSION }}"
+          rm -f /tmp/clang.tar.gz
+
+      - name: Build kernel
+        run: |
+          CLANG_DIR="$PWD/toolchain/${{ env.CLANG_VERSION }}" \
+          JOBS="$(nproc)" \
+          ./ci/build-kernel.sh
+
+      - name: Package AnyKernel3 zip
+        run: ./ci/package-anykernel.sh
+
+      - name: Fetch BakaSU manager APK (best effort)
+        continue-on-error: true
+        run: |
+          curl -L --retry 2 -o dist/BakaSU-manager-arm64-v8a.apk \
+            "https://github.com/Baka-SU/BakaSU/releases/download/v4.2.0-rc3/ReSukiSU_v4.2.0-rc3_35171-arm64-v8a-release.apk"
+
+      - name: Artifact summary
+        run: ls -la dist/
+
+      - name: Upload flashable zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: BakaSU-mars-anykernel3
+          path: dist/*.zip
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload manager APK
+        uses: actions/upload-artifact@v4
+        continue-on-error: true
+        with:
+          name: BakaSU-manager-apk
+          path: dist/*.apk
+          retention-days: 30

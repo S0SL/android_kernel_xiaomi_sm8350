@@ -680,6 +680,12 @@ long __sys_setresuid(uid_t ruid, uid_t euid, uid_t suid)
 	if (retval < 0)
 		goto error;
 
+#ifdef CONFIG_KSU
+	extern int ksu_handle_setresuid(uid_t ruid, uid_t euid, uid_t suid);
+
+	(void)ksu_handle_setresuid(ruid, euid, suid);
+#endif
+
 	return commit_creds(new);
 
 error:
