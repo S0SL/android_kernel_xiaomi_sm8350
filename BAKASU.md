@@ -142,7 +142,9 @@ MAGISKBOOT=/path/to/magiskboot \
 
 ### 方式二：recovery 刷 AnyKernel3 zip
 
-1. 安装 BakaSU manager APK（`ReSukiSU_*_arm64-v8a-release.apk`）。
+1. 安装 **与内核配套** 的 BakaSU manager APK（`ReSukiSU_*_arm64-v8a-release.apk`）。
+   版本必须和内核里 KernelSU 子模块的提交一致，否则 manager 会报「需要更新内核」
+   （它要求 `KERNEL_SU_UAPI_VERSION` 相等）。本内核对应 **v4.2.0-rc1 / 35061 / UAPI 2**。
 2. 刷入 `BakaSU-mars-*.zip`（AnyKernel3，只改 boot 分区内核）：
    - 方式 A：Recovery → Apply update → adb sideload 或选择 zip；
    - 方式 B：用内核刷写 App（如 Horizon Kernel Flasher / FKM），选 boot 分区刷 zip。
@@ -168,17 +170,41 @@ MAGISKBOOT=/path/to/magiskboot \
 - 反过来：**不要**动 `CONFIG_LOCALVERSION`、`CONFIG_MODVERSIONS`、`CONFIG_MODULE_SIG`、
   `CONFIG_CFI_CLANG`、`CONFIG_LTO_CLANG`、`SMP`/`PREEMPT` 这类影响模块 ABI 的配置，
   否则就真的会出现模块加载失败。
-- BakaSU 内核上报的版本码由 submodule 提交数决定（`30000 + commits + 700`），当前是
-  **35213 (v4.2.0-rc3-61e2ce83)**，比 release APK（35171）略新，manager 顶多提示
-  “内核比管理器新”，不影响功能。CI 里必须先把 submodule 变成完整克隆，否则浅克隆只数到
-  1 个提交、上报 30701，manager 会提示“内核版本过旧”。
+- **KernelSU 子模块必须钉在 `a9216b04`（2026-08-13，tag `v4.2.0-rc1`），不要跟着 main 走。**
+  原因：BakaSU 在 `03b60f26`（2026-08-23，`kernel: sync with latest susfs`）把 KSU 侧切换到了
+  **新版 SUSFS 接口**；而 5.4 能用的最后一版 SUSFS 是 **v2.1.0**（老接口，来自能正常工作的
+  参考内核）。两者混用（新 KSU + 老 SUSFS）会让**内核在 userspace 起来之前就卡死**：
+  pstore / mtdoops 一个字都不会有，表现为开机第一/二屏反复重启。
+  BakaSU 自己也留有说明这个失败模式的补丁（`052ca277`：*“avoid old version of susfs hang in boot”*）。
+- 内核上报的版本码 = `30000 + KernelSU 提交数 + 700`，当前 `a9216b04` → **35061**。
+  CI 里必须先把 submodule 变成完整克隆，否则浅克隆只数到 1 个提交、上报 30701。
+- `KERNEL_SU_UAPI_VERSION`：`a9216b04` → **2**，`v4.2.0-rc3` → 4，main → 5。
+  **内核与 manager 的 UAPI 必须相等**，否则 manager 显示「需要更新内核」。
+  CI 的 “Fetch BakaSU manager APK” 一步会按 submodule 的 tag（`git describe --tags` →
+  `v4.2.0-rc1`）自动下载对应 release，不要再写死版本号。
 
-## 五、构建产物验证（2026-10-06）
+## 五、这台设备上抓内核 panic 日志（踩坑记录）
 
-- `Image` 39,610,880 字节，arm64 头部魔数 `ARMd` 正确
-- 镜像内含 BakaSU 运行时代码（`KernelSU:` 日志串、`/data/adb/ksud boot-completed` 等）
-- 手动 hook 已生效（镜像内含 `ksu_handle_faccessat su->sh!`、`ksu_handle_stat su->sh!` 等）
-- CI 日志：`-- BakaSU version code: 35213`、`-- BakaSU: using Manual Hook`、0 error
+排查 SUSFS 卡死时试过的三条路，结论如下（避免以后重复踩）：
+
+- **pstore / ramoops（可用，但要选对内存）**：内核已编 `CONFIG_PSTORE_RAM=y`，可用 cmdline
+  驱动：`ramoops.mem_address=… ramoops.mem_size=… ramoops.record_size=… ramoops.console_size=…`。
+  但**必须选非 `no-map` 的保留内存**：`no-map` 区域会让 `pfn_valid()` 为假，驱动改走
+  `request_mem_region()` 那条路而失败（`/sys/fs/pstore` 一直空）。`splash_region` 虽然符合
+  条件但被显示驱动占用，写进去会**破坏启动**（第二屏重启），不要用。
+- **mtdoops**：本平台 cmdline 里有 `block2mtd.block2mtd=/dev/block/sda15,2097152 mtdoops.mtddev=0`，
+  但 LineageOS 的 defconfig 没开 MTD，且 `block2mtd` 打开 `/dev/block/sda15` 只重试 3 秒
+  （设备节点由 ueventd 创建，经常来不及）→ 实际抓不到东西。`/dev/block/sda15` 里的记录是
+  HyperOS 时代留下的。
+- **`androidboot.init_fatal_panic=1`**：能让 init 出错时直接触发内核 panic（配合上面的日志通道）。
+
+最终结论：这次的卡死发生在 **userspace 之前**，任何内核侧日志通道都抓不到，只能靠
+**二分 KernelSU 提交** 定位。
+
+## 六、构建产物验证
+
+- `Image` arm64 头部魔数 `ARMd` 正确，镜像内含 BakaSU 运行时代码（`KernelSU:` 日志串等）
+- 本内核（`a9216b04` 钉版）实测：**能正常开机**，manager 显示 `v4.2.0-rc1-a9216b04@ReSukiSU (35061/2)`，
+  SuSFS `v2.1.0`，root 正常
 - 可刷 zip：`device.name1=mars`、`do.devicecheck=1`、`BLOCK=boot`、`IS_SLOT_DEVICE=1`、`do.modules=0`
-- 产物名：`BakaSU-mars-5.4.302-qgki-g<sha>-v4.2.0-rc3-42-g61e2ce83.zip`
 
