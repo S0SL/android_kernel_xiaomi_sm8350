@@ -78,7 +78,6 @@ echo "== [3/3] enabling BakaSU (SUSFS inline hook mode) =="
 	-d KSU_MANUAL_HOOK \
 	-e KSU_SUSFS_SUS_PATH \
 	-e KSU_SUSFS_SUS_MOUNT \
-	-e KSU_SUSFS_SUS_KSTAT \
 	-e KSU_SUSFS_SPOOF_UNAME \
 	-e KSU_SUSFS_ENABLE_LOG \
 	-e KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
@@ -103,7 +102,9 @@ grep -q "^CONFIG_KSU_SUSFS=y" "$OUT/.config" || { echo "ERROR: CONFIG_KSU_SUSFS 
 
 echo
 echo "== building '$MAKE_TARGET' (jobs=$JOBS) =="
-kmake -j"$JOBS" "$MAKE_TARGET"
+# -k: keep going after an error so that one CI run reports *all* compile
+# errors of a porting change instead of just the first one.
+kmake -k -j"$JOBS" "$MAKE_TARGET"
 
 echo
 echo "== artifacts =="

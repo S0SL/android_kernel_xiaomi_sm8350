@@ -3,10 +3,6 @@
 
 #include <linux/bits.h>
 #include <linux/string.h>
-#include <linux/version.h> // We need check kernel version.
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 12, 0)
-#include <linux/cred.h>
-#endif
 
 /********/
 /* ENUM */
@@ -46,20 +42,25 @@
 #define TRY_UMOUNT_DEFAULT 0 /* used by susfs_try_umount() */
 #define TRY_UMOUNT_DETACH 1 /* used by susfs_try_umount() */
 
-#define VFSMOUNT_MNT_FLAGS_KSU_UNSHARED_MNT 0x80000000 /* used for mounts that are unshared by ksu process */
-#define DEFAULT_KSU_MNT_ID 500000 /* used for mounts created or single cloned by ksu process */
-#define DEFAULT_KSU_MNT_GROUP_ID 5000 /* used by mount->mnt_group_id */
+#define DEFAULT_KSU_MNT_ID 2000000000 /* used for mounts created or single cloned by ksu process */
+#define DEFAULT_KSU_MNT_GROUP_ID 200000 /* used by mount->mnt_group_id */
+#define DEFAULT_KSU_MNT_MINOR_DEV (1 << 12) /* should be way enough, here minor(dev) begins with 4097 */
 
 #ifndef FUSE_SUPER_MAGIC
 #define FUSE_SUPER_MAGIC 0x65735546
 #endif
+
 /*
- * inode->i_state => A 'unsigned long' type storing flag 'AS_FLAGS_', bit 1 to 31 is not usable since 6.12
+ * mnt->mnt.mnt_flags => An 'int' primitive storing flag 'VFSMOUNT_MNT_FLAGS_'
+ * task_struct->thread_info.flags => storing flag 'TIF_' which is an unsigned long primitive :D
+ * inode->i_mapping->flags => An 'unsigned long' primitive storing flag 'AS_FLAGS_', bit 1 to 31 is not usable since 6.12
  * nd->state => storing flag 'ND_STATE_'
  * nd->flags => storing flag 'ND_FLAGS_'
- * task_struct->thread_info.flags => storing flag 'TIF_'
+ * statx request_mark => storing flag 'STATX_'
  */
- // thread_info->flags is unsigned long :D
+
+#define VFSMOUNT_MNT_FLAGS_KSU_UNSHARED_MNT 0x80000000 /* used for mounts that are unshared by ksu process */
+
 #define TIF_PROC_UMOUNTED 33
 #define TIF_PROC_NO_SU 34
 #define TIF_PROC_UMOUNTED_FOR_ZYGOTE_NEXT 35
@@ -72,17 +73,17 @@
 
 #define ND_STATE_LOOKUP_LAST 32
 #define ND_STATE_OPEN_LAST 64
-#define ND_FLAGS_LOOKUP_LAST		0x2000000
+#define ND_FLAGS_LOOKUP_LAST 0x2000000
 
-#define MAGIC_MOUNT_WORKDIR "/debug_ramdisk/workdir"
-
+#define STATX_SUS_KSTAT 0x10000000U
+#define STATX_SUS_KSTAT_FUSE 0x20000000U
 
 static inline bool susfs_starts_with(const char *str, const char *prefix) {
-	while (*prefix) {
-		if (*str++ != *prefix++)
-			return false;
-	}
-	return true;
+    while (*prefix) {
+        if (*str++ != *prefix++)
+            return false;
+    }
+    return true;
 }
 
 static inline bool susfs_ends_with(const char *str, const char *suffix) {
@@ -100,45 +101,9 @@ static inline bool susfs_ends_with(const char *str, const char *suffix) {
 	return !strcmp(str + str_len - suffix_len, suffix);
 }
 
-/* From KernelSU */
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 2, 0)
-typedef const struct qstr *susfs_fname_t;
-#define susfs_fname_len(f) ((f)->len)
-#define susfs_fname_arg(f) ((f)->name)
-#else
-typedef const unsigned char *susfs_fname_t;
-#define susfs_fname_len(f) (strlen(f))
-#define susfs_fname_arg(f) (f)
-#endif
-
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0)
-#define SUSFS_DECL_FSNOTIFY_OPS(name)                                            \
-int name(struct fsnotify_mark *mark, u32 mask, struct inode *inode,    \
-struct inode *dir, const struct qstr *file_name, u32 cookie)
-#elif LINUX_VERSION_CODE >= KERNEL_VERSION(5, 2, 0)
-#define SUSFS_DECL_FSNOTIFY_OPS(name)                                            \
-int name(struct fsnotify_group *group, struct inode *inode, u32 mask,  \
-const void *data, int data_type, susfs_fname_t file_name,       \
-u32 cookie, struct fsnotify_iter_info *iter_info)
-#elif LINUX_VERSION_CODE >= KERNEL_VERSION(4, 18, 0)
-#define SUSFS_DECL_FSNOTIFY_OPS(name)                                            \
-int name(struct fsnotify_group *group, struct inode *inode, u32 mask,  \
-const void *data, int data_type, susfs_fname_t file_name,       \
-u32 cookie, struct fsnotify_iter_info *iter_info)
-#elif LINUX_VERSION_CODE >= KERNEL_VERSION(4, 12, 0)
-#define SUSFS_DECL_FSNOTIFY_OPS(name)                                            \
-int name(struct fsnotify_group *group, struct inode *inode,            \
-struct fsnotify_mark *inode_mark,                             \
-struct fsnotify_mark *vfsmount_mark, u32 mask,                \
-const void *data, int data_type, susfs_fname_t file_name,       \
-u32 cookie, struct fsnotify_iter_info *iter_info)
-#else
-#define SUSFS_DECL_FSNOTIFY_OPS(name)                                            \
-int name(struct fsnotify_group *group, struct inode *inode,            \
-struct fsnotify_mark *inode_mark,                             \
-struct fsnotify_mark *vfsmount_mark, u32 mask, void *data,    \
-int data_type, susfs_fname_t file_name, u32 cookie)
-#endif
+static inline bool susfs_is_current_app_uid(void) {
+	return ((current_uid().val % 100000) >= 10000);
+}
 
 static inline bool susfs_is_current_proc_umounted(void) {
 	return (likely(test_thread_flag(TIF_PROC_UMOUNTED)));
@@ -164,6 +129,11 @@ static inline void susfs_clear_current_proc_umounted_for_zygote_next(void) {
 	clear_thread_flag(TIF_PROC_UMOUNTED_FOR_ZYGOTE_NEXT);
 }
 
+static inline bool susfs_is_current_proc_umounted_app(void) {
+	return (likely(test_thread_flag(TIF_PROC_UMOUNTED)) &&
+			current_uid().val >= 10000);
+}
+
 static inline bool susfs_is_current_proc_no_su(void) {
 	return (likely(test_thread_flag(TIF_PROC_NO_SU)));
 }
@@ -176,26 +146,17 @@ static inline void susfs_clear_current_proc_no_su(void) {
 	clear_thread_flag(TIF_PROC_NO_SU);
 }
 
-static inline bool susfs_is_current_proc_umounted_app(void) {
-	return (likely(test_thread_flag(TIF_PROC_UMOUNTED)) &&
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 12, 0)
-			__kuid_val(current_uid()) >= 10000);
-#else
-			current_uid().val >= 10000);
-#endif
-}
-
 #define SUSFS_IS_INODE_SUS_MAP(inode) \
 		inode && inode->i_mapping && \
-		unlikely(test_bit(AS_FLAGS_SUS_MAP, &inode->i_state)) && \
+		unlikely(test_bit(AS_FLAGS_SUS_MAP, &inode->i_mapping->flags)) && \
 		susfs_is_current_proc_umounted_app()
 
 #define SUSFS_IS_INODE_OPEN_REDIRECT_WITHOUT_UID_CHECK(inode) \
 		inode && inode->i_mapping && \
-		unlikely(test_bit(AS_FLAGS_OPEN_REDIRECT, &inode->i_state))
+		unlikely(test_bit(AS_FLAGS_OPEN_REDIRECT, &inode->i_mapping->flags))
 
 #define SUSFS_IS_INODE_OPEN_REDIRECT(inode) \
 		inode && inode->i_mapping && \
-		unlikely(test_bit(AS_FLAGS_OPEN_REDIRECT, &inode->i_state)) && \
+		unlikely(test_bit(AS_FLAGS_OPEN_REDIRECT, &inode->i_mapping->flags)) && \
 		susfs_is_current_proc_umounted_app()
 #endif // #ifndef KSU_SUSFS_DEF_H
