@@ -42,6 +42,13 @@
 #include "conditional.h"
 
 #ifdef CONFIG_KSU_SUSFS
+/*
+ * 5.4 adaptation: unlike 5.10+, struct selinux_state has no status_lock
+ * (nor status_page) member in this tree; both still live in struct selinux_ss,
+ * which is fully defined in ss/services.h. Needed for the fake status open
+ * handler below.
+ */
+#include "ss/services.h"
 extern struct selinux_state fake_state;
 extern struct page *fake_status;
 extern struct static_key_false fake_status_initialize_key;
@@ -245,9 +252,20 @@ static int my_sel_open_handle_status(struct inode *inode, struct file *filp)
 	int ret;
 
 	if (likely(current_uid().val >= 10000 && ksu_selinux_hide_enabled)) {
-		mutex_lock(&selinux_state.status_lock);
+		/*
+		 * 5.4 adaptation: this tree's struct selinux_state has no
+		 * status_lock member (it was only moved there in 5.10 from
+		 * struct selinux_ss), so the same mutex is reached through
+		 * selinux_state.ss here. KernelSU resolves exactly the same
+		 * address for this kernel in initialize_fake_status()
+		 * (KernelSU/kernel/feature/selinux_hide.c:
+		 *  ksu_selinux_status_lock = &selinux_state.ss->status_lock),
+		 * which keeps the fake_status read serialized against
+		 * initialize_fake_status()/ksu_selinux_hide_exit().
+		 */
+		mutex_lock(&selinux_state.ss->status_lock);
 		data = fake_status;
-		mutex_unlock(&selinux_state.status_lock);
+		mutex_unlock(&selinux_state.ss->status_lock);
 		if (data) {
 			filp->private_data = data;
 			return 0;

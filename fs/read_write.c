@@ -594,17 +594,31 @@ ssize_t ksys_read(unsigned int fd, char __user *buf, size_t count)
 
 #ifdef CONFIG_KSU_SUSFS
 extern struct static_key_true ksu_is_init_rc_hook_enabled;
-extern __attribute__((cold)) void ksu_handle_sys_read(unsigned int fd);
+/*
+ * 5.4 / KernelSU-main adaptation: this KernelSU revision (61e2ce83) only
+ * provides the three-argument variant
+ *	int ksu_handle_sys_read(unsigned int fd, char __user **buf_ptr,
+ *				size_t *count_ptr);
+ * (KernelSU/kernel/runtime/ksud_integration.c), which is what SUSFS v2.1.0
+ * on the bakasu branch called as well. The one-argument
+ * "void ksu_handle_sys_read(unsigned int fd)" SUSFS helper does not exist in
+ * this submodule, and declaring it conflicted with the KernelSU prototype.
+ */
+extern int ksu_handle_sys_read(unsigned int fd, char __user **buf_ptr,
+			       size_t *count_ptr);
 #endif
 
 SYSCALL_DEFINE3(read, unsigned int, fd, char __user *, buf, size_t, count)
 {
 #ifdef CONFIG_KSU_SUSFS
 	if (static_branch_unlikely(&ksu_is_init_rc_hook_enabled))
-		ksu_handle_sys_read(fd);
-#endif
-
-#ifdef CONFIG_KSU
+		ksu_handle_sys_read(fd, &buf, &count);
+#elif defined(CONFIG_KSU)
+	/*
+	 * Non-SUSFS builds: the syscall-table hook that would normally call
+	 * this is only installed for CONFIG_KSU_TRACEPOINT_HOOK, so call it
+	 * from the syscall itself.
+	 */
 	extern int ksu_handle_sys_read(unsigned int fd, char __user **buf_ptr,
 				       size_t *count_ptr);
 

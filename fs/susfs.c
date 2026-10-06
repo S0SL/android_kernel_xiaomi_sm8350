@@ -1426,9 +1426,23 @@ static int watch_one_dir(struct watch_dir *wd)
  * synchronize_srcu on the same SRCU struct, causing a permanent deadlock).
  * Cleanup is deferred to a delayed_work that runs outside the SRCU context.
  */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0)
 static int susfs_handle_sdcard_inode_event(struct fsnotify_mark *mark, u32 mask,
 											struct inode *inode, struct inode *dir,
 											const struct qstr *file_name, u32 cookie)
+#else
+/*
+ * 5.4 ABI: struct fsnotify_ops carries handle_event() instead of
+ * handle_inode_event(); it is called with the watched inode, the raw event
+ * data and the child name resolved by __fsnotify_parent()
+ * (see send_to_group() in fs/notify/fsnotify.c of this tree).
+ */
+static int susfs_handle_sdcard_inode_event(struct fsnotify_group *group,
+											struct inode *inode, u32 mask,
+											const void *data, int data_type,
+											const struct qstr *file_name, u32 cookie,
+											struct fsnotify_iter_info *iter_info)
+#endif
 {
 	if (!file_name || file_name->len != 7 ||
 	    memcmp(file_name->name, "Android", 7))
@@ -1444,7 +1458,12 @@ static int susfs_handle_sdcard_inode_event(struct fsnotify_mark *mark, u32 mask,
 }
 
 static const struct fsnotify_ops fsnotify_ops = {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0)
 	.handle_inode_event = susfs_handle_sdcard_inode_event,
+#else
+	/* 5.4: struct fsnotify_ops has handle_event(), not handle_inode_event() */
+	.handle_event = susfs_handle_sdcard_inode_event,
+#endif
 };
 
 static int add_mark_on_inode(struct inode *inode, u32 mask,

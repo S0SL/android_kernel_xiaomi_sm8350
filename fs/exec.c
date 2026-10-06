@@ -1746,6 +1746,32 @@ static int exec_binprm(struct linux_binprm *bprm)
 }
 
 /*
+ * KSU/SUSFS hooks must be declared before __do_execve_file() on 5.4:
+ * unlike 5.10+, this kernel folds do_execveat_common()'s body into
+ * __do_execve_file(), which is defined earlier in the file. The signatures
+ * below match KernelSU main (61e2ce83):
+ *   - kernel/feature/sucompat.c defines ksu_handle_execveat(),
+ *     ksu_handle_execveat_sucompat() and ksu_handle_post_execveat_sucompat()
+ *     (the last two only under CONFIG_KSU_SUSFS, see also sucompat.h)
+ *   - ksu_su_compat_enabled is a struct static_key_true because
+ *     KSU_COMPAT_USE_STATIC_KEY is set for Linux >= 4.3
+ *     (KernelSU/kernel/compat/kernel_compat.h)
+ */
+#ifdef CONFIG_KSU
+extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,
+			       void *argv, void *envp, int *flags);
+#ifdef CONFIG_KSU_SUSFS
+extern struct static_key_true ksu_su_compat_enabled;
+extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;
+extern bool __ksu_is_allow_uid_for_current(uid_t uid);
+extern int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr, void *argv,
+				void *envp, int *flags);
+extern int ksu_handle_post_execveat_sucompat(int *fd, struct filename **filename_ptr, void *argv,
+				void *envp, int *flags, int *retval);
+#endif // #ifdef CONFIG_KSU_SUSFS
+#endif // #ifdef CONFIG_KSU
+
+/*
  * sys_execve() executes a new program.
  */
 static int __do_execve_file(int fd, struct filename *filename,
@@ -1928,23 +1954,6 @@ out_ret:
 		putname(filename);
 	return retval;
 }
-
-#ifdef CONFIG_KSU
-extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,
-			       void *argv, void *envp, int *flags);
-#endif
-
-#ifdef CONFIG_KSU_SUSFS
-extern struct static_key_true ksu_su_compat_enabled;
-extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;
-extern bool __ksu_is_allow_uid_for_current(uid_t uid);
-extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv,
-			void *envp, int *flags);
-extern int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr, void *argv,
-				void *envp, int *flags);
-extern int ksu_handle_post_execveat_sucompat(int *fd, struct filename **filename_ptr, void *argv,
-				void *envp, int *flags, int *retval);
-#endif
 
 static int do_execveat_common(int fd, struct filename *filename,
 			      struct user_arg_ptr argv,
