@@ -116,13 +116,42 @@ export CLANG_DIR=/path/to/clang
 前置：已解锁 BL 的 Mi 11 Pro（mars），已刷 LineageOS 23.2，且 **vbmeta 已禁用校验**
 （刷 LineageOS 时正常流程已经做了，否则任何第三方内核都起不来）。
 
+### 方式一：fastboot 刷 boot.img（推荐，不需要 recovery）
+
+本机 recovery 与内核同在 `boot` 分区，所以直接把 boot 镜像刷进去最省事：
+
+```sh
+# 手机进 fastboot（关机后 音量下 + 电源）
+fastboot flash boot boot-bakasu-mars.img
+fastboot reboot
+```
+
+镜像怎么来（`ci/make-bootimg.sh`）：
+
+```sh
+# 1) 从官方 OTA 里取出 boot 分区
+./payload-dumper-go -p boot -o bootdump lineage-23.2-<date>-nightly-mars-signed.zip
+
+# 2) 用我们的 Image 替换其中的内核（ramdisk / dtb 不动，脚本会校验 ramdisk 一致性）
+MAGISKBOOT=/path/to/magiskboot \
+  ./ci/make-bootimg.sh bootdump/boot.img out/arch/arm64/boot/Image boot-bakasu-mars.img
+```
+
+> magiskboot 可以从 Magisk APK 里取：`unzip Magisk-*.apk 'lib/arm64-v8a/*'`，
+> `lib/arm64-v8a/libmagiskboot.so` 就是一个可直接执行的静态 arm64 程序。
+
+### 方式二：recovery 刷 AnyKernel3 zip
+
 1. 安装 BakaSU manager APK（`ReSukiSU_*_arm64-v8a-release.apk`）。
 2. 刷入 `BakaSU-mars-*.zip`（AnyKernel3，只改 boot 分区内核）：
-   - 方式 A：LineageOS Recovery → Apply update → adb sideload 或选择 zip；
+   - 方式 A：Recovery → Apply update → adb sideload 或选择 zip；
    - 方式 B：用内核刷写 App（如 Horizon Kernel Flasher / FKM），选 boot 分区刷 zip。
 3. 重启，打开 manager，应当显示“已安装 / Working”。
 
-回退：把 LineageOS 原版 `boot.img` 刷回 boot 分区即可（或者重刷一次 ROM zip）。
+> 注意：**LineageOS 官方 recovery 对 `adb sideload` 的包会做签名校验**，未签名的
+> AnyKernel3 zip 可能直接报错刷不进去；这种情况请用方式一（fastboot 刷 boot.img）。
+
+回退：把官方原版 `boot.img` 刷回 boot 分区即可（或者重刷一次 ROM zip）。
 
 ## 四、兼容性注意（重要）
 
