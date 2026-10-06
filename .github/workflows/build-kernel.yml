@@ -81,8 +81,24 @@ jobs:
       - name: Fetch BakaSU manager APK (best effort)
         continue-on-error: true
         run: |
-          curl -L --retry 2 -o dist/BakaSU-manager-arm64-v8a.apk \
-            "https://github.com/Baka-SU/BakaSU/releases/download/v4.2.0-rc3/ReSukiSU_v4.2.0-rc3_35171-arm64-v8a-release.apk"
+          # The manager and the kernel must be built from the same KernelSU
+          # commit: the manager refuses to work when the kernel's UAPI version
+          # differs ("需要更新内核").  Derive the matching release from the
+          # pinned submodule instead of hard-coding a version.
+          TAG=$(git -C KernelSU describe --tags --abbrev=0)
+          CODE=$((30000 + $(git -C KernelSU rev-list --count HEAD) + 700))
+          echo "KernelSU $TAG (kernel version code $CODE)"
+          for name in "ReSukiSU_${TAG}_${CODE}" "BakaSU_${TAG}_${CODE}"; do
+            for abi in arm64-v8a universal; do
+              url="https://github.com/Baka-SU/BakaSU/releases/download/${TAG}/${name}-${abi}-release.apk"
+              if curl -fsSL --retry 2 -o dist/BakaSU-manager-arm64-v8a.apk "$url"; then
+                echo "fetched $url"
+                exit 0
+              fi
+            done
+          done
+          echo "WARNING: no manager APK release matches $TAG (code $CODE) - the" \
+               "app already on the device may report '需要更新内核'"
 
       - name: Artifact summary
         run: ls -la dist/
