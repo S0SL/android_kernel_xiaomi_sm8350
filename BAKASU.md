@@ -98,10 +98,32 @@ export CLANG_DIR=/path/to/clang
 
 回退：把 LineageOS 原版 `boot.img` 刷回 boot 分区即可（或者重刷一次 ROM zip）。
 
-## 四、兼容性注意
+## 四、兼容性注意（重要）
 
-- 本内核只替换 `Image`，**内核版本字符串（vermagic）保持与官方一致**，设备上 `/vendor/lib/modules`
-  的模块照常加载。
-- 因此请不要修改 `CONFIG_LOCALVERSION`、也不要改 `CONFIG_MODVERSIONS` 等影响模块 ABI 的配置。
-- 因为内核版本码（35213）比现成的 manager release（v4.2.0-rc3，35171）新，manager 可能提示
-  “内核比管理器新”，属正常，功能不受影响。
+- 本内核只替换 boot 分区的 `Image`，ramdisk / dtb / dtbo 保持官方不动。
+- **内核版本串（UTS_RELEASE）会和官方不同**：本仓库构建出来是
+  `5.4.302-qgki-g<本仓库 commit>` —— defconfig 没有关 `CONFIG_LOCALVERSION_AUTO`，
+  构建时会按 git 状态追加短 SHA。但这**不影响模块加载**，原因：
+  - `CONFIG_MODVERSIONS=y`：内核比对模块 vermagic 时（`same_magic()`，`has_crcs=true`）
+    会**跳过第一个字段（版本号）**，只比对 `SMP PREEMPT mod_unload modversions aarch64`；
+  - `CONFIG_MODULE_SIG` 未开启，没有签名强制；
+  - 我们只新增调用，没有改动任何既有类型/函数签名，所以符号 CRC（`__crc_*`）与官方一致。
+  因此 `/vendor/lib/modules` 以及 boot 镜像里的 `BOOT_KERNEL_MODULES`
+  （`msm_drm` / `fts_touch_spi` / `qti_battery_charger_main` 等）都能正常加载。
+- 反过来：**不要**动 `CONFIG_LOCALVERSION`、`CONFIG_MODVERSIONS`、`CONFIG_MODULE_SIG`、
+  `CONFIG_CFI_CLANG`、`CONFIG_LTO_CLANG`、`SMP`/`PREEMPT` 这类影响模块 ABI 的配置，
+  否则就真的会出现模块加载失败。
+- BakaSU 内核上报的版本码由 submodule 提交数决定（`30000 + commits + 700`），当前是
+  **35213 (v4.2.0-rc3-61e2ce83)**，比 release APK（35171）略新，manager 顶多提示
+  “内核比管理器新”，不影响功能。CI 里必须先把 submodule 变成完整克隆，否则浅克隆只数到
+  1 个提交、上报 30701，manager 会提示“内核版本过旧”。
+
+## 五、构建产物验证（2026-10-06）
+
+- `Image` 39,610,880 字节，arm64 头部魔数 `ARMd` 正确
+- 镜像内含 BakaSU 运行时代码（`KernelSU:` 日志串、`/data/adb/ksud boot-completed` 等）
+- 手动 hook 已生效（镜像内含 `ksu_handle_faccessat su->sh!`、`ksu_handle_stat su->sh!` 等）
+- CI 日志：`-- BakaSU version code: 35213`、`-- BakaSU: using Manual Hook`、0 error
+- 可刷 zip：`device.name1=mars`、`do.devicecheck=1`、`BLOCK=boot`、`IS_SLOT_DEVICE=1`、`do.modules=0`
+- 产物名：`BakaSU-mars-5.4.302-qgki-g<sha>-v4.2.0-rc3-42-g61e2ce83.zip`
+
