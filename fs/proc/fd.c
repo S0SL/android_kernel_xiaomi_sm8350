@@ -72,10 +72,15 @@ static int seq_show(struct seq_file *m, void *v)
 			int mnt_id = real_mount(file->f_path.mnt)->mnt_id;
 			unsigned long ino = inode->i_ino;
 			susfs_sus_kstat_spoof_proc_fd_seq_show(&mnt_id, &ino, inode->i_sb->s_dev);
-			seq_printf(m, "pos:\t%lli\nflags:\t0%o\nmnt_id:\t%i\nino:\t%lu\n",
+			/*
+			 * 5.4 note: stock fdinfo prints pos/flags/mnt_id only (the
+			 * "ino:" field was added in 5.10).  Print exactly the same
+			 * fields as the default path below so a reader cannot tell a
+			 * spoofed entry from a normal one.
+			 */
+			seq_printf(m, "pos:\t%lli\nflags:\t0%o\nmnt_id:\t%i\n",
 					(long long)file->f_pos, f_flags,
-					mnt_id,
-					ino);
+					mnt_id);
 			goto bypass_orig_flow;
 		}
 	}
@@ -103,10 +108,10 @@ static int seq_show(struct seq_file *m, void *v)
 				goto out_path_put;
 			}
 
-			seq_printf(m, "pos:\t%lli\nflags:\t0%o\nmnt_id:\t%i\nino:\t%lu\n",
+			/* same 3 fields as stock 5.4 fdinfo, see the note above */
+			seq_printf(m, "pos:\t%lli\nflags:\t0%o\nmnt_id:\t%i\n",
 					(long long)file->f_pos, f_flags,
-					susfs_get_non_sus_mnt_id_from_mnt(mnt),
-					d_backing_inode(path.dentry)->i_ino);
+					susfs_get_non_sus_mnt_id_from_mnt(mnt));
 			path_put(&path);
 			kfree(pathname);
 			goto bypass_orig_flow;
