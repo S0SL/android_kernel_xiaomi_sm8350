@@ -78,6 +78,38 @@ jobs:
       - name: Package AnyKernel3 zip
         run: ./ci/package-anykernel.sh
 
+      - name: Build fastboot-flashable boot.img (best effort)
+        continue-on-error: true
+        run: |
+          # Repack the stock boot image from our own release with the freshly
+          # built Image so that both flashing methods ship together:
+          #   fastboot flash boot <img>                  (dist/*.img)
+          #   recovery / kernel flasher -> <anykernel3>  (dist/*.zip)
+          curl -fsSL --retry 2 -o /tmp/stock-boot.zip \
+            "https://github.com/S0SL/android_kernel_xiaomi_sm8350/releases/download/boot-img-LOS23.2-20260930-bakasu/boot-stock-LOS23.2-20260930.zip"
+          mkdir -p /tmp/bootimg && unzip -q -o /tmp/stock-boot.zip -d /tmp/bootimg
+          curl -fsSL --retry 2 -o /tmp/magisk.apk \
+            "https://github.com/topjohnwu/Magisk/releases/download/v27.0/Magisk-v27.0.apk"
+          unzip -q -o /tmp/magisk.apk 'lib/x86_64/libmagiskboot.so' -d /tmp/magisk
+          MB=/tmp/magisk/lib/x86_64/libmagiskboot.so
+          chmod +x "$MB"
+          cp "$(ls /tmp/bootimg/*.img | head -1)" /tmp/bootimg/work.img
+          cd /tmp/bootimg
+          if "$MB" unpack work.img >/dev/null 2>&1; then
+            sha256sum ramdisk.cpio > orig.sha
+            cp "$GITHUB_WORKSPACE/out/arch/arm64/boot/Image" kernel
+            if "$MB" repack work.img boot-bakasu-mars.img >/dev/null 2>&1; then
+              # sanity check: the ramdisk must be the untouched stock one
+              if "$MB" unpack boot-bakasu-mars.img >/dev/null 2>&1 &&
+                 sha256sum -c orig.sha >/dev/null 2>&1; then
+                cp boot-bakasu-mars.img "$GITHUB_WORKSPACE/dist/"
+                echo "boot.img OK: $(ls -l "$GITHUB_WORKSPACE/dist/"*.img)"
+              else
+                echo "WARNING: repacked boot.img failed the ramdisk check"
+              fi
+            fi
+          fi
+
       - name: Fetch BakaSU manager APK (best effort)
         continue-on-error: true
         run: |
@@ -114,11 +146,13 @@ jobs:
       - name: Artifact summary
         run: ls -la dist/
 
-      - name: Upload flashable zip
+      - name: Upload flashable images (AnyKernel3 zip + fastboot boot.img)
         uses: actions/upload-artifact@v4
         with:
           name: BakaSU-mars-anykernel3
-          path: dist/*.zip
+          path: |
+            dist/*.zip
+            dist/*.img
           if-no-files-found: error
           retention-days: 30
 
