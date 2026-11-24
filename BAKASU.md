@@ -1,5 +1,8 @@
 # BakaSU + SUSFS 内核 · 接手文档
 
+> ⚠️ **非官方构建（Unofficial），刷入有风险。** 使用前请阅读 [免责声明](DISCLAIMER.md)。
+
+
 > 项目说明见本文档。仓库根的 `README.md` 是 LineageOS 上游原文，未改动。
 > 分支 `lineage-23.2` · 内核 `5.4.302-qgki` · 文档更新 2026-11-23（基线提交 `797c093f`）
 
